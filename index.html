@@ -1,0 +1,204 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Video Reels with Presets</title>
+  <style>
+    body { background: #000; color: #fff; font-family: sans-serif; margin: 0; }
+    .upload { display: flex; flex-direction: column; align-items: center; justify-content: center; height: 100vh; padding: 1rem; text-align: center; }
+    .reels { display: none; height: 100vh; overflow-y: scroll; scroll-snap-type: y mandatory; -webkit-overflow-scrolling: touch; }
+    .reel { height: 100vh; display: flex; align-items: center; justify-content: center; scroll-snap-align: start; }
+    video { width: 100%; height: 100%; object-fit: cover; }
+    button, input, select { margin-top: 12px; padding: 10px 18px; font-size: 16px; border: none; border-radius: 6px; }
+    button { background: #007bff; color: #fff; cursor: pointer; }
+    button:active { background: #0056b3; }
+    .counter { margin-top: 10px; font-size: 14px; }
+    .preset-controls { margin-top: 15px; }
+    .danger { background:#dc3545; }
+    .secondary { background:#28a745; }
+  </style>
+</head>
+<body>
+  <div class="upload">
+    <h2>Upload Your Videos</h2>
+    <input type="file" id="videoInput" multiple accept="video/*">
+    <div class="counter" id="counter">No videos selected</div>
+    <button id="submitBtn">Submit</button>
+
+    <div class="preset-controls">
+      <input type="text" id="presetName" placeholder="Preset name">
+      <button id="savePresetBtn">Save Preset</button>
+      <br>
+      <select id="presetSelect">
+        <option value="">--Select Preset--</option>
+      </select>
+      <button id="loadPresetBtn">Load Preset</button>
+      <button id="addVideosBtn" class="secondary">Add Videos</button>
+      <button id="deletePresetBtn" class="danger">Delete Preset</button>
+    </div>
+  </div>
+
+  <div class="reels" id="reels"></div>
+
+  <script>
+    const input = document.getElementById('videoInput');
+    const counter = document.getElementById('counter');
+    const reels = document.getElementById('reels');
+    const upload = document.querySelector('.upload');
+    const submit = document.getElementById('submitBtn');
+    const savePresetBtn = document.getElementById('savePresetBtn');
+    const loadPresetBtn = document.getElementById('loadPresetBtn');
+    const addVideosBtn = document.getElementById('addVideosBtn');
+    const deletePresetBtn = document.getElementById('deletePresetBtn');
+    const presetNameInput = document.getElementById('presetName');
+    const presetSelect = document.getElementById('presetSelect');
+
+    let db;
+
+    // Open IndexedDB
+    const request = indexedDB.open("VideoReelsDB", 1);
+    request.onupgradeneeded = e => {
+      db = e.target.result;
+      db.createObjectStore("presets", { keyPath: "name" });
+    };
+    request.onsuccess = e => {
+      db = e.target.result;
+      loadPresetsToSelect();
+    };
+
+    // Update counter when files selected
+    input.addEventListener('change', () => {
+      counter.textContent = input.files.length ? `${input.files.length} video(s) selected` : "No videos selected";
+    });
+
+    // Save new preset
+    savePresetBtn.onclick = async () => {
+      if (!input.files.length) return alert("Select videos first!");
+      const name = presetNameInput.value.trim();
+      if (!name) return alert("Enter preset name!");
+
+      const files = await filesToBase64(input.files);
+      const tx = db.transaction("presets", "readwrite");
+      tx.objectStore("presets").put({ name, files });
+      tx.oncomplete = () => {
+        loadPresetsToSelect();
+        alert("Preset saved!");
+      };
+    };
+
+    // Load preset
+    loadPresetBtn.onclick = () => {
+      const name = presetSelect.value;
+      if (!name) return alert("Select a preset!");
+      const tx = db.transaction("presets", "readonly");
+      const req = tx.objectStore("presets").get(name);
+      req.onsuccess = () => {
+        const preset = req.result;
+        if (preset) showReels(preset.files);
+      };
+    };
+
+    // Add videos to existing preset
+    addVideosBtn.onclick = async () => {
+      const name = presetSelect.value;
+      if (!name) return alert("Select a preset to add videos!");
+      if (!input.files.length) return alert("Select videos to add!");
+
+      const newFiles = await filesToBase64(input.files);
+      const tx = db.transaction("presets", "readwrite");
+      const store = tx.objectStore("presets");
+      const req = store.get(name);
+      req.onsuccess = () => {
+        let preset = req.result;
+        preset.files = preset.files.concat(newFiles);
+        store.put(preset);
+        tx.oncomplete = () => {
+          alert("Videos added to preset!");
+          loadPresetsToSelect();
+        };
+      };
+    };
+
+    // Delete preset with confirmation
+    deletePresetBtn.onclick = () => {
+      const name = presetSelect.value;
+      if (!name) return alert("Select a preset to delete!");
+      if (!confirm(`Are you sure you want to delete the preset "${name}"?`)) return;
+
+      const tx = db.transaction("presets", "readwrite");
+      tx.objectStore("presets").delete(name);
+      tx.oncomplete = () => {
+        loadPresetsToSelect();
+        alert(`Preset "${name}" deleted.`);
+      };
+    };
+
+    // Load preset names
+    function loadPresetsToSelect() {
+      presetSelect.innerHTML = '<option value="">--Select Preset--</option>';
+      const tx = db.transaction("presets", "readonly");
+      tx.objectStore("presets").getAllKeys().onsuccess = e => {
+        e.target.result.forEach(name => {
+          const opt = document.createElement('option');
+          opt.value = name;
+          opt.textContent = name;
+          presetSelect.appendChild(opt);
+        });
+      };
+    }
+
+    // Temporary submit without saving
+    submit.onclick = () => {
+      if (!input.files.length) return;
+      const files = Array.from(input.files).map(file => ({
+        name: file.name,
+        data: URL.createObjectURL(file)
+      }));
+      showReels(files);
+    };
+
+    // Convert files to Base64
+    function filesToBase64(fileList) {
+      return Promise.all(Array.from(fileList).map(file => {
+        return new Promise(resolve => {
+          const reader = new FileReader();
+          reader.onload = () => resolve({ name: file.name, data: reader.result });
+          reader.readAsDataURL(file);
+        });
+      }));
+    }
+
+    function showReels(files) {
+      upload.style.display = 'none';
+      reels.style.display = 'block';
+      reels.innerHTML = "";
+      files.forEach(file => {
+        const div = document.createElement('div');
+        div.className = 'reel';
+        div.innerHTML = `<video src="${file.data}" playsinline></video>`;
+        reels.appendChild(div);
+      });
+      initReels();
+    }
+
+    function initReels() {
+      const videos = document.querySelectorAll('video');
+      const observer = new IntersectionObserver(entries => {
+        entries.forEach(entry => {
+          const video = entry.target;
+          if (entry.isIntersecting) {
+            videos.forEach(v => { v.pause(); v.muted = true; });
+            video.currentTime = 0;
+            video.play().catch(()=>{});
+            video.muted = false;
+          } else {
+            video.pause();
+          }
+        });
+      }, { threshold: 0.75 });
+      videos.forEach(video => observer.observe(video));
+    }
+  </script>
+</body>
+</html>
